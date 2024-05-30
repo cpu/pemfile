@@ -208,3 +208,22 @@ fn whitespace_prefix() {
     assert_eq!(items.len(), 1);
     assert!(matches!(items[0], rustls_pemfile::Item::X509Certificate(_)));
 }
+
+#[test]
+fn server_ech_configs() {
+    let (_, _) = rustls_pemfile::server_ech_configs(&mut BufReader::new(
+        &include_bytes!("data/server_ech_config.pem")[..],
+    ))
+    .unwrap();
+}
+
+#[test]
+fn ech_configs() {
+    let items = rustls_pemfile::ech_configs(&mut BufReader::new(
+        &include_bytes!("data/server_ech_config.pem")[..],
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
+
+    assert_eq!(items.len(), 1);
+}

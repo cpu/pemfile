@@ -61,6 +61,7 @@ mod tests;
 
 /// --- Main crate APIs:
 mod pemfile;
+
 #[cfg(feature = "std")]
 pub use pemfile::{read_all, read_one};
 pub use pemfile::{read_one_from_slice, Error, Item};
@@ -68,8 +69,8 @@ pub use pemfile::{read_one_from_slice, Error, Item};
 use pki_types::PrivateKeyDer;
 #[cfg(feature = "std")]
 use pki_types::{
-    CertificateDer, CertificateRevocationListDer, CertificateSigningRequestDer, PrivatePkcs1KeyDer,
-    PrivatePkcs8KeyDer, PrivateSec1KeyDer,
+    CertificateDer, CertificateRevocationListDer, CertificateSigningRequestDer, EchConfigListBytes,
+    PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer,
 };
 
 #[cfg(feature = "std")]
@@ -104,7 +105,9 @@ pub fn private_key(rd: &mut dyn io::BufRead) -> Result<Option<PrivateKeyDer<'sta
             Item::Pkcs1Key(key) => return Ok(Some(key.into())),
             Item::Pkcs8Key(key) => return Ok(Some(key.into())),
             Item::Sec1Key(key) => return Ok(Some(key.into())),
-            Item::X509Certificate(_) | Item::Crl(_) | Item::Csr(_) => continue,
+            Item::X509Certificate(_) | Item::Crl(_) | Item::Csr(_) | Item::EchConfigs(_) => {
+                continue
+            }
         }
     }
 
@@ -126,7 +129,8 @@ pub fn csr(
             | Item::Pkcs8Key(_)
             | Item::Sec1Key(_)
             | Item::X509Certificate(_)
-            | Item::Crl(_) => continue,
+            | Item::Crl(_)
+            | Item::EchConfigs(_) => continue,
         }
     }
 
@@ -188,6 +192,62 @@ pub fn ec_private_keys(
 ) -> impl Iterator<Item = Result<PrivateSec1KeyDer<'static>, io::Error>> + '_ {
     iter::from_fn(move || read_one(rd).transpose()).filter_map(|item| match item {
         Ok(Item::Sec1Key(key)) => Some(Ok(key)),
+        Err(err) => Some(Err(err)),
+        _ => None,
+    })
+}
+
+/// Return a PKCS#8 private key and Encrypted Client Hello (ECH) config list from `rd`.
+///
+/// Both are mandatory and must be present in the input. The file should begin with the PEM
+/// encoded PKCS#8 private key, followed by the PEM encoded ECH config list.
+///
+/// See [draft-farrell-tls-pemesni.txt] and [draft-ietf-tls-esni §4][draft-ietf-tls-esni]
+/// for more information.
+///
+/// [draft-farrell-tls-pemesni.txt]: https://github.com/sftcd/pemesni/blob/44bcf7259f204a60421ea05be02a1e2859cadaa9/draft-farrell-tls-pemesni.txt
+/// [draft-ietf-tls-esni]: https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-4
+#[cfg(feature = "std")]
+pub fn server_ech_configs(
+    rd: &mut dyn io::BufRead,
+) -> Result<(PrivatePkcs8KeyDer<'static>, EchConfigListBytes<'static>), io::Error> {
+    // draft-farrell-tls-pemesni specifies the PEM format for a server's ECH config as the PEM
+    // delimited base64 encoding of a PKCS#8 private key, and then subsequently the PEM
+    // delimited base64 encoding of a TLS encoded ECH config. Both are mandatory.
+
+    let Ok(Some(Item::Pkcs8Key(private_key))) = read_one(rd) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Missing mandatory PKCS#8 private key",
+        ));
+    };
+
+    let Ok(Some(Item::EchConfigs(ech_configs))) = read_one(rd) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Missing mandatory ECH config",
+        ));
+    };
+
+    Ok((private_key, ech_configs))
+}
+
+/// Return an iterator over Encrypted Client Hello (ECH) configs from `rd`.
+///
+/// Each ECH config is expected to be a PEM-delimited ("-----BEGIN ECH CONFIG-----") BASE64
+/// encoding of a TLS encoded ECHConfigList structure, as described in
+/// [draft-ietf-tls-esni §4][draft-ietf-tls-esni].
+///
+/// For server configurations that require both a private key and a config, prefer
+/// [server_ech_config].
+///
+/// [draft-ietf-tls-esni]: https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-4
+#[cfg(feature = "std")]
+pub fn ech_configs(
+    rd: &mut dyn io::BufRead,
+) -> impl Iterator<Item = Result<EchConfigListBytes<'static>, io::Error>> + '_ {
+    iter::from_fn(move || read_one(rd).transpose()).filter_map(|item| match item {
+        Ok(Item::EchConfigs(ech_configs)) => Some(Ok(ech_configs)),
         Err(err) => Some(Err(err)),
         _ => None,
     })

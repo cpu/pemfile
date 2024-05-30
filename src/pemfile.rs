@@ -9,8 +9,8 @@ use core::ops::ControlFlow;
 use std::io::{self, ErrorKind};
 
 use pki_types::{
-    CertificateDer, CertificateRevocationListDer, CertificateSigningRequestDer, PrivatePkcs1KeyDer,
-    PrivatePkcs8KeyDer, PrivateSec1KeyDer,
+    CertificateDer, CertificateRevocationListDer, CertificateSigningRequestDer, EchConfigListBytes,
+    PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer,
 };
 
 /// The contents of a single recognised block in a PEM file.
@@ -46,6 +46,15 @@ pub enum Item {
     ///
     /// Appears as "CERTIFICATE REQUEST" in PEM files.
     Csr(CertificateSigningRequestDer<'static>),
+
+    /// Encrypted client hello (ECH) configs; as specified in
+    /// [draft-ietf-tls-esni-18 §4][draft-ietf-tls-esni-18].
+    ///
+    /// PEM encoding specified in [draft-farrell-tls-pemesni.txt].
+    ///
+    /// [draft-ietf-tls-esni-18]: <https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-18#section-4>
+    /// [draft-farrell-tls-pemesni.txt]: <https://github.com/sftcd/pemesni/blob/44bcf7259f204a60421ea05be02a1e2859cadaa9/draft-farrell-tls-pemesni.txt>
+    EchConfigs(EchConfigListBytes<'static>),
 }
 
 /// Errors that may arise when parsing the contents of a PEM file
@@ -190,17 +199,18 @@ fn read_one_impl(
 
     if let Some((section_type, end_marker)) = section.as_ref() {
         if line.starts_with(end_marker) {
-            let der = base64::ENGINE
+            let raw = base64::ENGINE
                 .decode(&b64buf)
                 .map_err(|err| Error::Base64Decode(format!("{err:?}")))?;
 
             let item = match section_type.as_slice() {
-                b"CERTIFICATE" => Some(Item::X509Certificate(der.into())),
-                b"RSA PRIVATE KEY" => Some(Item::Pkcs1Key(der.into())),
-                b"PRIVATE KEY" => Some(Item::Pkcs8Key(der.into())),
-                b"EC PRIVATE KEY" => Some(Item::Sec1Key(der.into())),
-                b"X509 CRL" => Some(Item::Crl(der.into())),
-                b"CERTIFICATE REQUEST" => Some(Item::Csr(der.into())),
+                b"CERTIFICATE" => Some(Item::X509Certificate(raw.into())),
+                b"RSA PRIVATE KEY" => Some(Item::Pkcs1Key(raw.into())),
+                b"PRIVATE KEY" => Some(Item::Pkcs8Key(raw.into())),
+                b"EC PRIVATE KEY" => Some(Item::Sec1Key(raw.into())),
+                b"X509 CRL" => Some(Item::Crl(raw.into())),
+                b"CERTIFICATE REQUEST" => Some(Item::Csr(raw.into())),
+                b"ECHCONFIG" => Some(Item::EchConfigs(raw.into())),
                 _ => {
                     *section = None;
                     b64buf.clear();
@@ -303,6 +313,7 @@ mod base64 {
         GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
     );
 }
+
 use self::base64::Engine;
 
 #[cfg(test)]
